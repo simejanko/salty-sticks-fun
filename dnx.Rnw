@@ -1,0 +1,246 @@
+\documentclass[11pt]{article}
+
+
+\usepackage{parskip}
+\usepackage{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage[makeroom]{cancel}
+
+\def\Arrow{\raisebox{-.5\height}{\scalebox{2}{ $\Rightarrow$ }}}
+\def\Image#1{\raisebox{-.5\height}{\includegraphics[width=5.5cm]{#1}}}
+
+\geometry{
+  a4paper,
+  bottom=1.1in,
+  right=1.25in,
+  left=1.25in,
+  top=1.25in,
+}
+
+\pagenumbering{gobble}
+
+\begin{document}
+\SweaveOpts{concordance=TRUE,echo=F,include=FALSE}
+
+\title{How do salty sticks break?}
+\date{\vspace{-7ex}}
+\maketitle
+
+\begin{center}
+Number of members: 1
+\end{center}
+
+\section*{Data collection}
+We picked two small bags (45g) of Slap Bohinj salty sticks from the store. One of the bags was dropped from a balcony (3-4m) onto a concrete floor.  
+
+Salty sticks from each bag were laid on respective A3 papers. After that we took photo of each paper and used computer vision to compute stick lengths and number of sticks per bag. This is a high level overview of computer vision steps we used:
+\begin{enumerate}
+\item Threshold grayscale image so that we get binary pixel values. 
+\item Segment A3 paper and determine pixel to cm conversion ratio based on length of each of it's sides. 
+\item Find contours (sticks) on segmented A3 paper.
+\item Fit rotated rectangle on each contour and compute it's length.
+\end{enumerate}
+Additional steps that deal with noise were not mentioned. 
+
+\begin{figure}[h]
+\Image{data/drop_v2}\Arrow%
+\Image{drop_rect}\Arrow%
+\begin{minipage}{0.3 \textwidth}
+    \vdots
+    11.63 cm\newline
+    5.04 cm\newline 
+    10.11 cm\newline
+    \vdots 
+\end{minipage}
+\end{figure}
+\subsection*{Biases and errors}
+Our data collection was not perfect. We picked two bags that have the same brand/package size and were likely part of the same delivery from the factory and thus exposed to the same conditions prior to being put on the shelf. While this selection makes effects of a single drop more obvious, findings won't generalize to any other brand, package size or two random bags.
+
+There is also a lot of potential for measurement errors. From pixel to cm conversion to image binarizations a lot of things can contain errors. Since we had full control over our experiment we've been able to mitigate a lot of those issues by adjusting paramaters (e.g. one of the images was a bit brighter so higher grayscale threshold had to be used).
+
+\section*{Analysis}
+We chose Poisson-Gamma model for modeling number of pieces since that variable has count data type. For modeling lengths, normal model with unknown mean and variance was used. We picked the same priors for drop and no drop distributions (based on our past experience with salty sticks) since we didn't expect that a single fall of a bag could result in much of a difference. 
+
+\subsection*{Number of pieces}
+
+<<label=FIG1,fig=T,height=2,width=4>>=
+library(ggplot2)
+#read data
+no_drop_data = scan('data/no_drop')
+drop_data = scan('data/drop')
+
+#Number of sticks per bag
+#Weak Gamma prior
+a <- 7
+b <- 0.1
+
+#posterior
+beta = b + 1 
+alpha_no_drop = a+length(no_drop_data)
+alpha_drop = a+length(drop_data)
+
+x <- seq(0,140,by = 0.1)
+tmp = data.frame(x = c(rep(x,3)),
+                 y = c(dgamma(x, alpha_no_drop, beta), dgamma(x, alpha_drop, beta), dgamma(x, a, b), 
+                       rep(0,0.07,0.1)), 
+                 Legend = rep(c("no drop posterior", "drop posterior", "prior"), each = length(x)))
+
+tmp2 = data.frame(x= c(length(no_drop_data), length(drop_data)))
+
+ggplot() + 
+  geom_line(data=tmp, aes(x=x, y=y, group = Legend, colour = Legend)) + 
+  geom_vline(data=tmp2, aes(xintercept=x, colour="data (no. of pieces)"), linetype="dashed") +
+  xlab(expression(theta)) + ylab("density") + scale_color_manual(values=c("black","red","blue","green")) +  
+  ggtitle("Poisson-Gamma model") + theme(legend.title=element_blank())
+@
+
+\begin{minipage}{0.5 \linewidth}
+\includegraphics[width=\linewidth]{dnx-FIG1}
+\end{minipage}
+\begin{minipage}{0.5 \linewidth}
+$N\dots no\_drop$
+\hspace{3mm}
+$D\dots drop$
+
+$\theta_{prior} \sim Gamma(7, 0.1)$ 
+
+$\overline{y_N} = 
+<<results=tex>>=
+  cat(length(no_drop_data))
+@
+$\hspace{5mm}
+$\overline{y_{D}} = 
+<<results=tex>>=
+  cat(length(drop_data))
+@
+$
+
+$E[\theta_{N}|y_{N}] = 
+<<results=tex>>=
+  cat(formatC(alpha_no_drop/beta, digits = 2, format = "f"))
+  ci = qgamma(c(0.025, 0.975),alpha_no_drop, beta)
+  cat(sprintf("\\:,95\\%% \\,CI: (%.2f, %.2f)", ci[1], ci[2]))
+@
+$
+
+
+$E[\theta_{D}|y_{D}] = 
+<<results=tex>>=
+cat(formatC(alpha_drop/beta, digits = 2, format = "f"))
+ci = qgamma(c(0.025, 0.975),alpha_drop, beta)
+cat(sprintf("\\:,95\\%% \\,CI: (%.2f, %.2f)", ci[1], ci[2]))
+@
+$
+
+$P(\theta_{D} > \theta_{N}|y) \approx 
+<<results=tex>>=
+m <- 1000
+x <- rgamma(m, alpha_no_drop, beta) < rgamma(m, alpha_drop, beta)
+cat(sprintf("%.2f \\pm %.2f", mean(x), sd(x)/sqrt(m)))
+@
+$ (MC approx.)
+
+\end{minipage}
+Expected values, sample means and posterior probability comparison indicate that we do expect dropped bags to contain more pieces. It's interesting that the two posterior distributions are this well separated despite only having one data point for each of them.
+
+\subsection*{Length of pieces}
+For this part of the analysis we infered from posterior via sampling.
+<<label=FIG2,fig=T,height=2,width=4>>=
+sample_posterior = function(m, y, mu0, k0, b0, a0){
+  yavg <- mean(y); n <- length(y); kn <- k0 + n
+  
+  s2 <- 1 / rgamma(m, a0 + 0.5*n, b0 + 0.5 * (sum((y-yavg)^2) + (k0*n)/(kn) * (yavg - mu0)^2))
+  mu <- rnorm(m, (k0*mu0 + n*yavg)/(kn) , sd = sqrt(s2 / kn) )
+  return(data.frame(s2=s2, mu=mu))
+}
+
+#weak normal prior
+mu0 <- 10; k0 <- 0.1; b0 <- 1.0; a0 <- 0.5
+m = 1000000
+no_drop_posterior <- sample_posterior(m, no_drop_data, mu0, k0, b0, a0)
+drop_posterior <- sample_posterior(m, drop_data, mu0, k0, b0, a0)
+ggplot() + stat_density(data=no_drop_posterior, aes(x = mu, colour="no drop posterior"), geom='line', position = "identity")+ 
+           stat_density(data=drop_posterior, aes(x = mu, colour="drop posterior"), geom='line', position = "identity") + xlab(expression(mu)) +
+           geom_vline(aes(xintercept = c(mean(no_drop_data), mean(drop_data)), colour = "data mean (length)"), lty = "dashed") + 
+           scale_color_manual(values=c("black","red","blue")) + ggtitle("Normal model (mean)") + theme(legend.title=element_blank())
+
+@
+
+\begin{minipage}{0.5 \linewidth}
+\includegraphics[width=\linewidth]{dnx-FIG2}
+\end{minipage}
+\begin{minipage}{0.5 \linewidth}
+$N\dots no\_drop$
+\hspace{3mm}
+$D\dots drop$
+
+$\sigma_{prior}^2 \sim IG(0.5, 1.0)$
+
+$\mu_{prior} | \sigma_{prior}^2 \sim N(10,\frac{\sigma_{prior}^2}{0.1})$ 
+
+$\overline{y_N} = 
+<<results=tex>>=
+  cat(formatC(mean(no_drop_data), digits=2, format="f"))
+@
+$\hspace{5mm}
+$\overline{y_{D}} = 
+<<results=tex>>=
+  cat(formatC(mean(drop_data), digits=2, format="f"))
+@
+$
+
+$E[\mu_{N}|y_{N}] \approx 
+<<results=tex>>=
+  mn = mean(no_drop_posterior$mu)
+  s = sd(no_drop_posterior$mu)
+  cat(sprintf("%.2f\\:,95\\%% \\,CI: (%.2f, %.2f)", mn , mn-2*s, mn+2*s))
+@
+$
+
+$E[\mu_{D}|y_{D}] \approx
+<<results=tex>>=
+  mn = mean(drop_posterior$mu)
+  s = sd(drop_posterior$mu)
+  cat(sprintf("%.2f\\:,95\\%% \\,CI: (%.2f, %.2f)", mn , mn-2*s, mn+2*s))
+@
+$
+
+$P(\mu_{N} > \mu_{D}|y) \approx 
+<<results=tex>>=
+x <- no_drop_posterior$mu > drop_posterior$mu
+cat(sprintf("%.2f \\pm %.2f", mean(x), sd(x)/sqrt(m)))
+@
+$
+\end{minipage}
+
+Expected values, sample means and posterior probability comparison indicate that we do expect dropped bags to have shorter pieces on average.
+
+<<label=FIG3,fig=T,height=2,width=4>>=
+no_drop_pred <- rnorm(m, no_drop_posterior$mu, sqrt(no_drop_posterior$s2))
+drop_pred <- rnorm(m, drop_posterior$mu, sqrt(drop_posterior$s2))
+
+ggplot() + geom_density(aes(x = no_drop_pred), colour="blue") +
+  geom_histogram(alpha = 0.35, aes(no_drop_data, ..density.., fill="no drop hist/pred."), binwidth=1) + geom_density(aes(x = drop_pred), colour = "red") +
+  geom_histogram(alpha = 0.35, aes(drop_data, ..density.., fill="drop hist/pred."), binwidth=1) + xlab('length (cm)') + coord_cartesian(xlim = c(0, 15)) +
+  theme(legend.title=element_blank()) + ggtitle('Predictive posterior and sample hist.') + scale_fill_manual(values = c("red", "blue"))
+
+#geom_density(data = tmp2, alpha = 0.5, aes(y,))
+
+@
+\begin{minipage}{0.5 \linewidth}
+\includegraphics[width=\linewidth]{dnx-FIG3}
+\end{minipage}
+\begin{minipage}{0.5 \linewidth}
+$P(y_{N} > y_{D}|y) \approx 
+<<results=tex>>=
+x <- no_drop_pred > drop_pred
+cat(sprintf("%.2f \\pm %.2f", mean(x), sd(x)/sqrt(m)))
+@
+$
+
+\end{minipage}
+Probability of a stick from a non-dropped bag being longer than one from a dropped bag is quite high but we can notice that visually, normal model doesn't look like the best fit for this data. Because of central limit theorem, that doesn't make our previous findings regarding expected values invalid.
+
+\end{document}
